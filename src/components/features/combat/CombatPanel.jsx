@@ -1,6 +1,7 @@
-import React, { useEffect, useCallback, useRef, useState } from 'react'
+import React, { useEffect, useCallback, useRef } from 'react'
 import { useCombatStore } from '../../../stores/combatStore'
 import { useGameStore } from '../../../stores/gameStore'
+import { useCharacterStore } from '../../../stores/characterStore'
 import { CombatService } from '../../../services/CombatService'
 import { Card, Button } from '../../ui'
 import { CombatGrid } from './CombatGrid'
@@ -9,70 +10,143 @@ import { CombatActionPanel } from './CombatActionPanel'
 import { CombatLog } from '../../ui/CombatLog'
 
 /**
- * Panneau de combat moderne utilisant Zustand
+ * Panneau de combat principal - VERSION NETTOYÉE
  */
 const CombatPanel = React.memo(({
   playerCharacter,
-  activeCompanions = [], // Compagnons actifs
+  activeCompanions = [],
   encounterData,
   onCombatEnd,
   onReplayCombat,
   combatKey,
-  victoryButtonText = "Continuer l'aventure" // Texte personnalisable du bouton de victoire
+  victoryButtonText = "Continuer l'aventure"
 }) => {
-  // Ref pour éviter les double initialisations
   const initializingRef = useRef(false)
-  
-  // État local pour le mode mouvement intégré
-  const [isMovementMode, setIsMovementMode] = useState(false)
+  const [isMovementMode, setIsMovementMode] = React.useState(false)
 
-  // Store principal (données partagées)
+  // Store principal
   const {
-    // État partagé
     turnOrder,
     getCurrentTurn,
     combatEnemies: enemies,
     combatPositions: positions,
-
+    combatPhase: phase,
+    isInitialized,
+    playerAction: selectedAction,
+    actionTargets: selectedTargets,
+    
     // Actions
     initializeCombat,
     startCombat,
-    setTurnPhase: setPhase,
     nextTurn,
     setPlayerAction: selectAction,
     setActionTargets,
     resetCombat,
     moveCharacter,
-    
-    // Nouvelles actions pour multi-actions
     resetPlayerTurnState,
     usePlayerAction,
     endPlayerTurn,
-    getPlayerTurnState
+    getPlayerTurnState,
+    dealDamageToEnemy,
+    setDamageCallbacks
   } = useCombatStore()
 
-  // État depuis le store Zustand
-  const {
-    combatPhase: phase,
-    isInitialized,
-    playerAction: selectedAction,
-    actionTargets: selectedTargets
-  } = useCombatStore()
+  const { addCombatMessage, clearCombatLog } = useGameStore()
+  const { takeDamagePlayer, takeDamageCompanionById } = useCharacterStore()
 
-  // Game store pour les messages
-  const { addCombatMessage, combatLog, clearCombatLog } = useGameStore()
-
-  // Calcul du tour actuel depuis TurnManager
   const currentTurn = getCurrentTurn()
 
-  // Fonctions pour gérer les cibles (définies avant useCallback)
-  const clearTargets = () => setActionTargets([])
-  const selectTarget = (target) => {
-    setActionTargets([...selectedTargets, target])
-  }
+  // Configuration des callbacks
+  useEffect(() => {
+    setDamageCallbacks(takeDamagePlayer, takeDamageCompanionById)
+  }, [setDamageCallbacks, takeDamagePlayer, takeDamageCompanionById])
 
-  // Fonction utilitaire pour exécuter une action et traiter les résultats
-  const executeActionAndApplyResults = useCallback((action, targets) => {
+  // Initialisation du combat - CORRIGÉE
+  useEffect(() => {
+    console.log('🎮 CombatPanel useEffect - Initialisation', { 
+      encounterData: !!encounterData, 
+      enemies: encounterData?.enemies?.length,
+      isInitialized,
+      combatKey 
+    })
+
+    if (!encounterData || !encounterData.enemies?.length) {
+      console.warn('❌ Pas de données de rencontre valides')
+      return
+    }
+
+    // Reset pour nouveau combat (rejouer)
+    if (combatKey !== undefined && isInitialized) {
+      console.log('🔄 Reset pour rejouer le combat')
+      resetCombat()
+      initializingRef.current = false
+      return
+    }
+
+    // Initialiser le combat pour la première fois
+    if (!isInitialized && !initializingRef.current) {
+      console.log('🚀 Première initialisation du combat')
+      initializingRef.current = true
+      
+      try {
+        initializeCombat(encounterData, playerCharacter, activeCompanions)
+      } catch (error) {
+        console.error('❌ Erreur lors de l\'initialisation:', error)
+        initializingRef.current = false
+      }
+    }
+  }, [encounterData, combatKey, isInitialized, playerCharacter, activeCompanions, initializeCombat, resetCombat])
+
+  // Messages d'initiative
+  useEffect(() => {
+    if (phase === 'initiative-display' && turnOrder.length > 0) {
+      addCombatMessage('⚔️ Un combat commence !', 'combat-start')
+      
+      turnOrder.forEach(combatant => {
+        addCombatMessage(
+          `🎲 ${combatant.name} obtient ${combatant.initiative} en initiative`, 
+          'initiative'
+        )
+      })
+    }
+  }, [phase, turnOrder, addCombatMessage])
+
+  // Reset état joueur au début de son tour
+  useEffect(() => {
+    if (phase === 'player-turn' && currentTurn?.type === 'player') {
+      resetPlayerTurnState()
+      setIsMovementMode(false) // Reset mode mouvement
+    }
+  }, [phase, currentTurn, resetPlayerTurnState])
+
+  // Gestionnaires d'actions
+  const handleActionSelect = useCallback((action) => {
+    console.log('🎯 Sélection action:', action.name)
+    selectAction(action)
+    setIsMovementMode(false) // Sortir du mode mouvement
+  }, [selectAction])
+
+  const handleTargetSelect = useCallback((target) => {
+    if (!selectedAction) return
+
+    console.log('🎯 Sélection cible:', target.name || target)
+    
+    const newTargets = [...selectedTargets, target]
+    setActionTargets(newTargets)
+
+    const maxTargets = selectedAction.projectiles || 1
+
+    if (newTargets.length >= maxTargets) {
+      // Auto-exécution
+      setTimeout(() => {
+        executeAction(selectedAction, newTargets)
+      }, 300)
+    }
+  }, [selectedAction, selectedTargets, setActionTargets])
+
+  const executeAction = useCallback((action, targets) => {
+    console.log('⚡ Exécution action:', action.name, 'sur', targets.length, 'cibles')
+    
     const result = CombatService.executePlayerAction(
       playerCharacter,
       action,
@@ -81,157 +155,64 @@ const CombatPanel = React.memo(({
       positions
     )
 
-    // Appliquer les résultats
-    result.messages.forEach(message => addCombatMessage(message.text, message.type))
+    // Traiter les messages
+    result.messages.forEach(message => {
+      const messageText = typeof message === 'string' ? message : message.text
+      const messageType = typeof message === 'object' ? message.type : 'info'
+      addCombatMessage(messageText, messageType)
+    })
 
-    // Appliquer les dégâts
+    // Traiter les dégâts
     if (result.damage && result.damage.length > 0) {
       result.damage.forEach(damageData => {
-        const target = enemies.find(e => e.name === damageData.targetId || e.id === damageData.targetId)
-        if (target) {
-          useCombatStore.getState().dealDamageToEnemy(target.name, damageData.damage)
-
-          // Message de mort si nécessaire  
-          setTimeout(() => {
-            const updatedEnemy = enemies.find(e => e.name === target.name)
-            if (updatedEnemy && updatedEnemy.currentHP <= 0 && target.currentHP > 0) {
-              addCombatMessage(`💀 ${target.name} tombe au combat !`, 'enemy-death')
-            }
-          }, 100)
-        }
+        dealDamageToEnemy(damageData.targetId, damageData.damage)
+        
+        // Vérifier si l'ennemi est mort
+        setTimeout(() => {
+          const updatedEnemy = enemies.find(e => 
+            e.name === damageData.targetId || e.id === damageData.targetId
+          )
+          if (updatedEnemy && updatedEnemy.currentHP <= 0) {
+            addCombatMessage(`💀 ${updatedEnemy.name} tombe au combat !`, 'victory')
+          }
+        }, 100)
       })
     }
 
-    // === NOUVEAU SYSTÈME MULTI-ACTIONS ===
     // Marquer l'action comme utilisée
     usePlayerAction('action')
     
     // Nettoyer la sélection
-    clearTargets()
+    setActionTargets([])
     selectAction(null)
+  }, [playerCharacter, enemies, positions, addCombatMessage, dealDamageToEnemy, usePlayerAction, setActionTargets, selectAction])
 
-    // Vérifier fin de tour automatique (si mouvement aussi utilisé)
-    setTimeout(() => {
-      const currentState = useCombatStore.getState()
-      const playerTurnState = currentState.getPlayerTurnState()
-      if (playerTurnState.actionsUsed.action && playerTurnState.actionsUsed.movement) {
-        // Auto-fin de tour si action utilisée ET mouvement fait
-        endPlayerTurn()
-      }
-    }, 100) // Petit délai pour que l'état se mette à jour
-  }, [playerCharacter, enemies, positions, addCombatMessage, clearTargets, selectAction, usePlayerAction, endPlayerTurn])
-
-  // Initialisation du combat
-  useEffect(() => {
-    if (!encounterData || !encounterData.enemies?.length) return
-
-    // Reset pour nouveau combat (rejouer)
-    if (combatKey !== undefined) {
-      resetCombat()
-      initializingRef.current = false // Reset du flag
-      return // Ne pas initialiser après reset, App.jsx s'en charge
-    }
-
-    // Initialiser le combat pour la première fois seulement
-    if (!isInitialized && !initializingRef.current) {
-      initializingRef.current = true
-      initializeCombat(encounterData, playerCharacter, activeCompanions)
-    }
-  }, [encounterData, combatKey, isInitialized, playerCharacter, activeCompanions, initializeCombat, resetCombat])
-
-  useEffect(() => {
-    // On se déclenche UNIQUEMENT quand la phase est la bonne.
-    if (phase === 'initiative-display') {
-      addCombatMessage('Un combat commence !', 'combat-start');
-      turnOrder.forEach(element => {
-        const message = `${element.name} a obtenu ${element.initiative} en initiative !`;
-        addCombatMessage(message, 'initiative');
-      });
-    }
-  }, [phase]);
-
-  // Note: La gestion des transitions de phase est maintenant déléguée au TurnManager
-  // CombatPanel ne fait plus que réagir aux phases définies par TurnManager
-  
-  // Réinitialiser l'état du joueur quand c'est son tour
-  useEffect(() => {
-    if (phase === 'player-turn' && currentTurn?.type === 'player') {
-      resetPlayerTurnState();
-    }
-  }, [phase, currentTurn, resetPlayerTurnState]);
-
-  // Gestion des actions de combat
-  const handleActionSelect = useCallback((action) => {
-    selectAction(action)
-  }, [selectAction])
-
-  const handleTargetSelect = useCallback((target) => {
-    if (!selectedAction) return
-
-    // Ajouter la cible à la liste
-    const newTargets = [...selectedTargets, target]
-    setActionTargets(newTargets)
-
-    // Auto-exécution si assez de cibles
-    const maxTargets = selectedAction.projectiles || 1
-
-    if (newTargets.length >= maxTargets) {
-      // Exécuter immédiatement avec les nouvelles cibles
-      setTimeout(() => {
-        executeActionAndApplyResults(selectedAction, newTargets)
-      }, 500) // Petit délai pour que l'utilisateur voie la sélection
-    }
-  }, [selectedAction, selectedTargets, setActionTargets, executeActionAndApplyResults])
-
-  const handleExecuteAction = useCallback(() => {
-    if (!selectedAction || !selectedTargets.length) return
-    executeActionAndApplyResults(selectedAction, selectedTargets)
-  }, [selectedAction, selectedTargets, executeActionAndApplyResults])
-
-  const handlePassTurn = () => {
-    addCombatMessage(`${playerCharacter.name} passe son tour.`)
-    clearTargets()
-    selectAction(null)
-    nextTurn()
-  }
-
-  // Nouvelle fonction : Gérer le toggle du mode mouvement
   const handleMovementToggle = useCallback(() => {
     setIsMovementMode(!isMovementMode)
-  }, [isMovementMode])
+    if (selectedAction) {
+      selectAction(null)
+      setActionTargets([])
+    }
+  }, [isMovementMode, selectedAction, selectAction, setActionTargets])
 
-  // Nouvelle fonction : Gérer le mouvement du joueur
   const handlePlayerMovement = useCallback((characterId, newPosition) => {
     if (characterId !== 'player') return
     
-    // Utiliser la fonction existante du store
-    const moveResult = moveCharacter(characterId, newPosition)
+    console.log('🏃 Mouvement joueur vers:', newPosition)
     
-    // Marquer le mouvement comme utilisé
+    moveCharacter(characterId, newPosition)
     usePlayerAction('movement')
-    
-    // Sortir du mode mouvement
     setIsMovementMode(false)
-    
-    // Vérifier fin de tour automatique si action aussi utilisée
-    setTimeout(() => {
-      const currentState = useCombatStore.getState()
-      const playerTurnState = currentState.getPlayerTurnState()
-      if (playerTurnState.actionsUsed.action && playerTurnState.actionsUsed.movement) {
-        // Auto-fin de tour si action utilisée ET mouvement fait
-        endPlayerTurn()
-      }
-    }, 100) // Délai pour que l'état se mette à jour
-  }, [moveCharacter, usePlayerAction, endPlayerTurn])
+  }, [moveCharacter, usePlayerAction])
 
-  // Rendu conditionnel selon la phase
+  // Rendu selon la phase
   const renderPhaseContent = () => {
     switch (phase) {
       case 'initializing':
         return (
           <Card>
             <div className="combat-phase-content">
-              <h3>Initialisation du combat...</h3>
+              <h3>⚙️ Initialisation du combat...</h3>
               <p>Préparation des combattants et jets d'initiative</p>
             </div>
           </Card>
@@ -241,10 +222,10 @@ const CombatPanel = React.memo(({
         return (
           <Card>
             <div className="combat-phase-content">
-              <h3>Initiative lancée !</h3>
-              <p>Les jets d'initiative ont été effectués. Prêt à commencer le combat ?</p>
+              <h3>🎲 Initiative lancée !</h3>
+              <p>Ordre d'initiative calculé. Prêt à commencer ?</p>
               <Button onClick={() => startCombat()}>
-                Commencer le combat
+                ⚔️ Commencer le combat
               </Button>
             </div>
           </Card>
@@ -257,19 +238,29 @@ const CombatPanel = React.memo(({
             selectedAction={selectedAction}
             selectedTargets={selectedTargets}
             onSelectAction={handleActionSelect}
-            onClearTargets={() => setActionTargets([])} // Réinitialiser les cibles
-            onExecuteAction={handleExecuteAction}
-            onPassTurn={handlePassTurn}
-            canMove={!getPlayerTurnState().hasMovedThisTurn}
+            onClearTargets={() => setActionTargets([])}
+            onPassTurn={() => endPlayerTurn()}
+            canMove={!playerTurnState.actionsUsed.movement}
             onMoveToggle={handleMovementToggle}
             isMovementMode={isMovementMode}
           />
         )
 
+      case 'executing-turn':
+        return (
+          <Card>
+            <div className="combat-phase-content">
+              <h3>⏳ Tour en cours</h3>
+              <p>
+                {currentTurn?.name || 'Entité inconnue'} réfléchit à son action...
+              </p>
+            </div>
+          </Card>
+        )
 
       case 'victory':
         return (
-          <Card >
+          <Card variant="success">
             <div className="combat-phase-content">
               <h3>🎉 Victoire !</h3>
               <p>Tous les ennemis ont été vaincus !</p>
@@ -285,34 +276,16 @@ const CombatPanel = React.memo(({
 
       case 'defeat':
         return (
-          <Card variant="danger">
+          <Card variant="error">
             <div className="combat-phase-content">
               <h3>💀 Défaite</h3>
               <p>Vous avez été vaincu...</p>
-              <div className="combat-defeat-actions">
-                <Button
-                  variant="secondary"
-                  onClick={onReplayCombat}
-                >
-                  Rejouer le combat
-                </Button>
-              </div>
-            </div>
-          </Card>
-        )
-
-      case 'enemy-turn':
-      case 'companion-turn':
-      case 'executing-turn':
-        return (
-          <Card>
-            <div className="combat-phase-content">
-              <h3>Tour en cours</h3>
-              <p>
-                {currentTurn?.type === 'enemy' && `${currentTurn.name} réfléchit...`}
-                {currentTurn?.type === 'companion' && `${currentTurn.name} agit...`}
-                {(!currentTurn || currentTurn.type === 'player') && 'Attendez la fin du tour en cours...'}
-              </p>
+              <Button
+                variant="secondary"
+                onClick={onReplayCombat}
+              >
+                🔄 Rejouer le combat
+              </Button>
             </div>
           </Card>
         )
@@ -321,20 +294,30 @@ const CombatPanel = React.memo(({
         return (
           <Card>
             <div className="combat-phase-content">
-              <h3>Combat en cours</h3>
-              <p>Phase: {phase} - Attendez...</p>
+              <h3>⚔️ Combat en cours</h3>
+              <p>Phase: {phase}</p>
             </div>
           </Card>
         )
     }
   }
 
+  // Debug des données de combat
+  console.log('🔍 CombatPanel render - État:', {
+    phase,
+    isInitialized,
+    enemiesCount: enemies.length,
+    positionsCount: Object.keys(positions).length,
+    currentTurn: currentTurn?.name
+  })
+
   if (!isInitialized) {
     return (
       <div className="combat-container">
         <Card>
           <div className="combat-loading">
-            <h3>Chargement du combat...</h3>
+            <h3>⏳ Chargement du combat...</h3>
+            <p>Initialisation en cours...</p>
           </div>
         </Card>
       </div>
@@ -348,7 +331,10 @@ const CombatPanel = React.memo(({
         currentTurn={currentTurn}
         turnOrder={turnOrder}
         phase={phase}
-        onPhaseChange={setPhase}
+        onPhaseChange={(newPhase) => {
+          console.log('🔄 Changement de phase:', phase, '→', newPhase)
+          useCombatStore.setState({ combatPhase: newPhase })
+        }}
         onNextTurn={nextTurn}
       />
 
@@ -379,10 +365,49 @@ const CombatPanel = React.memo(({
 
           {/* Journal de combat */}
           <div className="combat-log-section">
-            <CombatLog title="Combat" maxEntries={10} showTimestamps={false} />
+            <CombatLog 
+              title="Journal de Combat" 
+              maxEntries={20} 
+              showTimestamps={false}
+              compact={true}
+            />
           </div>
         </div>
       </div>
+
+      {/* Debug info en développement */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="combat-debug" style={{ 
+          position: 'fixed', 
+          bottom: '10px', 
+          right: '10px', 
+          background: 'rgba(0,0,0,0.8)', 
+          color: 'white', 
+          padding: '10px', 
+          borderRadius: '5px',
+          fontSize: '12px',
+          maxWidth: '300px'
+        }}>
+          <details>
+            <summary>🔍 Debug Combat</summary>
+            <div>
+              <p><strong>Phase:</strong> {phase}</p>
+              <p><strong>Tour actuel:</strong> {currentTurn?.name || 'Aucun'}</p>
+              <p><strong>Ennemis:</strong> {enemies.length}</p>
+              <p><strong>Positions:</strong> {Object.keys(positions).length}</p>
+              <p><strong>Ennemis vivants:</strong> {enemies.filter(e => e.currentHP > 0).length}</p>
+              <div>
+                <strong>Positions des ennemis:</strong>
+                {enemies.map(enemy => (
+                  <div key={enemy.id}>
+                    {enemy.name}: {positions[enemy.id] ? `(${positions[enemy.id].x},${positions[enemy.id].y})` : 'Pas de position'}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </details>
+        </div>
+      )}
     </div>
   )
 })

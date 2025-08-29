@@ -1,66 +1,84 @@
 /**
- * Factory pour la création d'ennemis dans les combats
- * Sépare la logique de création de la logique de combat
+ * Factory pour la création d'ennemis dans les combats - VERSION CORRIGÉE
  */
 
 import { enemyTemplates } from '../data/enemies';
-import { generateEntityId } from './EntityUtils.js'
 
 export class EnemyFactory {
   /**
-   * Crée les ennemis à partir des données de rencontre
-   * @param {Object} encounterData - Données de la rencontre
-   * @returns {Array} Liste des ennemis créés
+   * Crée les ennemis à partir des données de rencontre - CORRIGÉ
    */
   static createEnemiesFromEncounter(encounterData) {
+    console.log('🏭 EnemyFactory.createEnemiesFromEncounter avec:', encounterData)
+    
     if (!encounterData?.enemies?.length) {
       throw new Error('Aucun ennemi défini dans la rencontre');
     }
 
-    return encounterData.enemies.flatMap((encounter, encounterIndex) => {
+    const createdEnemies = []
+
+    encounterData.enemies.forEach((encounter, encounterIndex) => {
       const template = enemyTemplates[encounter.type];
       
       if (!template) {
-        console.error(`Template non trouvé pour: ${encounter.type}`);
-        return [];
+        console.error(`❌ Template non trouvé pour: ${encounter.type}`);
+        return;
       }
 
-      return Array(encounter.count)
-        .fill(null)
-        .map((_, index) => this.createEnemyFromTemplate(template, encounter, encounterIndex, index));
+      console.log(`👹 Création de ${encounter.count} ${encounter.type}(s)`)
+
+      // Créer le nombre d'ennemis demandé
+      for (let index = 0; index < encounter.count; index++) {
+        const enemy = this.createEnemyFromTemplate(template, encounter, encounterIndex, index);
+        createdEnemies.push(enemy);
+        console.log(`✅ Ennemi créé:`, enemy.name, `ID: ${enemy.id}`)
+      }
     });
+
+    console.log('🏭 Ennemis créés au total:', createdEnemies.length)
+    return createdEnemies
   }
 
   /**
-   * Crée un ennemi individuel à partir d'un template
-   * @param {Object} template - Template de l'ennemi
-   * @param {Object} encounter - Données de rencontre
-   * @param {number} encounterIndex - Index de la rencontre
-   * @param {number} index - Index de l'ennemi dans le groupe
-   * @returns {Object} Ennemi créé
+   * Crée un ennemi individuel à partir d'un template - CORRIGÉ
    */
   static createEnemyFromTemplate(template, encounter, encounterIndex, index) {
-    return {
+    // Générer un ID unique et cohérent
+    const enemyId = `enemy_${encounter.type}_${index}`
+    const enemyName = encounter.count > 1 ? `${template.name} ${index + 1}` : template.name
+
+    const enemy = {
+      // Copier toutes les propriétés du template
       ...template,
-      id: generateEntityId('enemy', encounter.type, index),
+      
+      // Propriétés d'identification uniques
+      id: enemyId,
+      name: enemyName,
       type: 'enemy',
       templateKey: encounter.type,
       instance: index,
-      name: encounter.count > 1 ? `${template.name} ${index + 1}` : template.name,
+      
+      // Propriétés de combat
       currentHP: template.currentHP ?? template.maxHP ?? 10,
       maxHP: template.maxHP ?? 10,
       ac: template.ac ?? 10,
+      
+      // Copier les stats et attaques
       stats: { ...template.stats },
       attacks: [...(template.attacks || [])],
-      image: template.image || '',
-      isAlive: true
-    };
+      
+      // Propriétés d'état
+      isAlive: true,
+      
+      // Image
+      image: template.image || ''
+    }
+
+    return enemy
   }
 
   /**
    * Valide les données d'une rencontre
-   * @param {Object} encounterData - Données à valider
-   * @returns {boolean} True si valide
    */
   static validateEncounterData(encounterData) {
     if (!encounterData || !Array.isArray(encounterData.enemies)) {
@@ -77,8 +95,6 @@ export class EnemyFactory {
 
   /**
    * Calcule la difficulté estimée d'une rencontre
-   * @param {Object} encounterData - Données de la rencontre
-   * @returns {number} Difficulté estimée
    */
   static calculateEncounterDifficulty(encounterData) {
     if (!this.validateEncounterData(encounterData)) {

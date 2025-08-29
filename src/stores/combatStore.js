@@ -1,12 +1,10 @@
 import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
 import { CombatService } from '../services/CombatService'
-import { calculateDistance } from '../utils/calculations'
-import { isValidGridPosition } from '../utils/validation'
 import { EnemyFactory } from '../services/EnemyFactory'
 import { CombatAI } from '../services/CombatAI'
 
-// Store SIMPLIFIÉ pour le combat
+// Store SIMPLIFIÉ et CORRIGÉ pour le combat
 export const useCombatStore = create(
   devtools(
     (set, get) => ({
@@ -16,7 +14,7 @@ export const useCombatStore = create(
       combatPhase: 'idle',
       combatKey: 0,
 
-      // Données partagées
+      // Données partagées - CORRECTION: Initialisation correcte
       combatEnemies: [],
       turnOrder: [],
       combatPositions: {},
@@ -32,34 +30,54 @@ export const useCombatStore = create(
         actionsUsed: {
           action: false,
           movement: false
-        }
+        },
+        hasMovedThisTurn: false
       },
 
-      // === MÉTHODES ESSENTIELLES ===
+      // === MÉTHODES ESSENTIELLES CORRIGÉES ===
 
       initializeCombat: (encounterData, playerCharacter, activeCompanions) => {
-        const enemies = EnemyFactory.createEnemiesFromEncounter(encounterData)
-        const turnOrder = CombatService.rollInitiative(playerCharacter, activeCompanions, enemies)
-        const positions = CombatService.calculateInitialPositions(enemies, activeCompanions)
+        console.log('🎮 Initialisation du combat avec:', { encounterData, playerCharacter, activeCompanions })
+        
+        try {
+          // Créer les ennemis avec IDs corrects
+          const enemies = EnemyFactory.createEnemiesFromEncounter(encounterData)
+          console.log('👹 Ennemis créés:', enemies)
+          
+          // Calculer l'ordre d'initiative
+          const turnOrder = CombatService.rollInitiative(playerCharacter, activeCompanions, enemies)
+          console.log('🎲 Ordre d\'initiative:', turnOrder)
+          
+          // Calculer les positions initiales - CORRECTION MAJEURE
+          const positions = CombatService.initializePositions(
+            playerCharacter, 
+            activeCompanions, 
+            enemies, 
+            encounterData.enemyPositions
+          )
+          console.log('📍 Positions calculées:', positions)
 
-        set({
-          isActive: true,
-          isInitialized: true,
-          combatPhase: 'initiative-display',
-          combatEnemies: enemies,
-          turnOrder: turnOrder,
-          combatPositions: positions,
-          currentTurnIndex: 0,
-          turnCounter: 1
-        })
+          set({
+            isActive: true,
+            isInitialized: true,
+            combatPhase: 'initiative-display',
+            combatEnemies: enemies,
+            turnOrder: turnOrder,
+            combatPositions: positions,
+            currentTurnIndex: 0,
+            turnCounter: 1
+          })
+          
+          console.log('✅ Combat initialisé avec succès')
+        } catch (error) {
+          console.error('❌ Erreur lors de l\'initialisation du combat:', error)
+        }
       },
 
       startCombat: () => {
         set({ combatPhase: 'player-turn' })
       },
-      setCombatMessageCallback: (callback) => set({
-        _onCombatMessage: callback
-      }),
+
       nextTurn: () => {
         const state = get()
         let nextIndex = state.currentTurnIndex + 1
@@ -70,6 +88,7 @@ export const useCombatStore = create(
         }
 
         const nextTurn = state.turnOrder[nextIndex]
+        console.log('➡️ Passage au tour suivant:', nextTurn)
 
         set({
           currentTurnIndex: nextIndex,
@@ -90,43 +109,51 @@ export const useCombatStore = create(
       setPlayerAction: (action) => set({ playerAction: action }),
       setActionTargets: (targets) => set({ actionTargets: targets }),
 
-      executeAction: () => {
+      // NOUVELLE MÉTHODE: Mouvement de personnage
+      moveCharacter: (characterId, newPosition) => {
         const state = get()
-        if (!state.playerAction || !state.actionTargets.length) return
-
-        const result = CombatService.executePlayerAction(
-          state.turnOrder[state.currentTurnIndex].character,
-          state.playerAction,
-          state.actionTargets,
-          state.combatEnemies,
-          state.combatPositions
-        )
-
-        get().applyActionResults(result)
-        set({ playerAction: null, actionTargets: [] })
+        const oldPosition = state.combatPositions[characterId]
+        
+        console.log(`🏃 Mouvement de ${characterId} de`, oldPosition, 'vers', newPosition)
+        
+        set({
+          combatPositions: {
+            ...state.combatPositions,
+            [characterId]: newPosition
+          }
+        })
+        
+        return { success: true, oldPosition, newPosition }
       },
 
-      applyActionResults: (result) => {
-        if (result.damage?.length > 0) {
-          result.damage.forEach(dmg => {
-            if (dmg.targetId === 'player') {
-              // Callback vers characterStore
-              const { _onPlayerDamage } = get()
-              if (_onPlayerDamage) _onPlayerDamage(dmg.damage)
-            } else {
-              get().dealDamageToEnemy(dmg.targetId, dmg.damage)
-            }
-          })
-        }
+      // CORRECTION: Méthode pour mettre à jour la position d'un ennemi
+      updateEnemyPosition: (enemyKey, newPosition) => {
+        const state = get()
+        console.log(`👹 Mise à jour position ennemi ${enemyKey}:`, newPosition)
+        
+        set({
+          combatPositions: {
+            ...state.combatPositions,
+            [enemyKey]: newPosition
+          }
+        })
       },
 
-      dealDamageToEnemy: (enemyName, damage) => {
+      dealDamageToEnemy: (enemyIdentifier, damage) => {
+        console.log(`💥 Dégâts à ${enemyIdentifier}: ${damage}`)
+        
         set((state) => ({
-          combatEnemies: state.combatEnemies.map(enemy =>
-            enemy.name === enemyName
-              ? { ...enemy, currentHP: Math.max(0, enemy.currentHP - damage) }
-              : enemy
-          )
+          combatEnemies: state.combatEnemies.map(enemy => {
+            // Chercher l'ennemi par plusieurs identifiants possibles
+            if (enemy.name === enemyIdentifier || 
+                enemy.id === enemyIdentifier ||
+                `${enemy.name}_${enemy.instance || 0}` === enemyIdentifier) {
+              const newHP = Math.max(0, enemy.currentHP - damage)
+              console.log(`👹 ${enemy.name} HP: ${enemy.currentHP} → ${newHP}`)
+              return { ...enemy, currentHP: newHP }
+            }
+            return enemy
+          })
         }))
       },
 
@@ -134,7 +161,8 @@ export const useCombatStore = create(
       resetPlayerTurnState: () => {
         set({
           playerTurnState: {
-            actionsUsed: { action: false, movement: false }
+            actionsUsed: { action: false, movement: false },
+            hasMovedThisTurn: false
           }
         })
       },
@@ -146,7 +174,8 @@ export const useCombatStore = create(
             actionsUsed: {
               ...state.playerTurnState.actionsUsed,
               [actionType]: true
-            }
+            },
+            hasMovedThisTurn: actionType === 'movement' ? true : state.playerTurnState.hasMovedThisTurn
           }
         }))
       },
@@ -160,10 +189,27 @@ export const useCombatStore = create(
         return get().playerTurnState
       },
 
-      // IA
+      canEndTurn: () => {
+        const state = get().playerTurnState
+        return state.actionsUsed.action || state.actionsUsed.movement
+      },
+
+      // IA unifiée
       executeUnifiedEntityTurn: (entity, gameState, onNextTurn) => {
-        const onMessage = (message) => console.log(`💬 ${message}`)
+        console.log(`🤖 Exécution tour IA pour ${entity.name}`)
+        
+        const onMessage = (message, type = 'info') => {
+          console.log(`💬 ${entity.name}: ${message}`)
+          // Ajouter le message au combat log si disponible
+          const { addCombatMessage } = require('../stores/gameStore').useGameStore.getState()
+          if (addCombatMessage) {
+            addCombatMessage(message, type)
+          }
+        }
+        
         const onDamage = (targetId, damage) => {
+          console.log(`💥 Dégâts de ${entity.name} à ${targetId}: ${damage}`)
+          
           if (targetId === 'player') {
             const { _onPlayerDamage } = get()
             if (_onPlayerDamage) _onPlayerDamage(damage)
@@ -172,7 +218,13 @@ export const useCombatStore = create(
           }
         }
 
-        CombatAI.executeEntityTurn(entity, gameState, onMessage, onDamage, onNextTurn)
+        try {
+          CombatAI.executeEntityTurn(entity, gameState, onMessage, onDamage, onNextTurn)
+        } catch (error) {
+          console.error(`❌ Erreur dans le tour de ${entity.name}:`, error)
+          onMessage(`Erreur dans le tour de ${entity.name}`, 'error')
+          setTimeout(() => onNextTurn(), 500)
+        }
       },
 
       // Callbacks externes
@@ -181,8 +233,14 @@ export const useCombatStore = create(
         set({ _onPlayerDamage: onPlayerDamage })
       },
 
-      // Reset
+      setCombatMessageCallback: (callback) => {
+        // Stocker le callback pour les messages
+        set({ _onCombatMessage: callback })
+      },
+
+      // Reset complet
       resetCombat: () => {
+        console.log('🔄 Reset du combat')
         set({
           isActive: false,
           isInitialized: false,
@@ -193,9 +251,19 @@ export const useCombatStore = create(
           currentTurnIndex: 0,
           turnCounter: 1,
           playerAction: null,
-          actionTargets: []
+          actionTargets: [],
+          playerTurnState: {
+            actionsUsed: { action: false, movement: false },
+            hasMovedThisTurn: false
+          }
         })
+      },
+
+      // Méthode pour incrémenter la clé de combat (pour forcer re-render)
+      incrementCombatKey: () => {
+        set((state) => ({ combatKey: state.combatKey + 1 }))
       }
-    })
+    }),
+    { name: 'combat-store' }
   )
 )
